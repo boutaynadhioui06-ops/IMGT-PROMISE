@@ -1,0 +1,635 @@
+---
+title: "`r params$title`"
+subtitle: "Regulatory 5′UTR motif analysis of IG and TR V-genes"
+author: "`r params$author`"
+date: "`r format(Sys.time(), '%Y-%m-%d, %H:%M')`"
+params:
+  title: "IMGT/PROMISE analysis report"
+  author: ""
+  notes: ""
+  data: NULL
+  partial: NULL
+  scanner_cmp: NULL
+  scanner_cons: NULL
+  scanner_pwm: NULL
+  sections: !r c("overview", "descriptive")
+  species: NULL
+  locus: NULL
+  include_repro: TRUE
+  app_name: "IMGT/PROMISE"
+  app_version: ""
+  app_release: ""
+  app_citation: ""
+---
+
+```{r setup, include=FALSE}
+suppressPackageStartupMessages({ library(dplyr); library(tidyr); library(ggplot2); library(knitr) })
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, results = "asis",
+                      fig.width = 6.8, fig.height = 3.9, dpi = 200, fig.align = "center",
+                      out.width = "100%")
+
+# ── Output format helpers ────────────────────────────────────────────────────
+out_fmt <- knitr::opts_knit$get("rmarkdown.pandoc.to")
+if (is.null(out_fmt)) out_fmt <- "html"
+fence <- strrep("`", 3)
+page_break <- function() {
+  if (identical(out_fmt, "docx"))
+    cat("\n\n", fence, "{=openxml}\n<w:p><w:r><w:br w:type=\"page\"/></w:r></w:p>\n", fence, "\n\n", sep = "")
+  else if (out_fmt %in% c("latex", "beamer"))
+    cat("\n\n\\newpage\n\n")
+}
+.st <- new.env(); .st$h1 <- 0L
+h1 <- function(title) { if (.st$h1 > 0L) page_break(); .st$h1 <- .st$h1 + 1L; cat("\n\n# ", title, "\n\n", sep = "") }
+h2 <- function(title) cat("\n\n## ", title, "\n\n", sep = "")
+note <- function(...) cat("\n\n> ", paste0(..., collapse = ""), "\n\n", sep = "")
+para <- function(...) cat("\n\n", paste0(..., collapse = ""), "\n\n", sep = "")
+show_table <- function(df, caption = NULL, digits = 2, ...) {
+  cat("\n\n")
+  print(knitr::kable(df, caption = caption, digits = digits, row.names = FALSE,
+                     format.args = list(big.mark = ","), ...))
+  cat("\n\n")
+}
+show_plot <- function(p) { cat("\n\n"); print(p); cat("\n\n") }
+safe <- function(expr) tryCatch(expr, error = function(e)
+  cat("\n\n> *This part could not be computed: ", conditionMessage(e), "*\n\n", sep = ""))
+
+# ── Palette and theme ────────────────────────────────────────────────────────
+pal <- c(navy = "#0B2A5B", blue = "#1565C0", green = "#1B7F3B", gold = "#F4C300", grey = "#6B7280")
+loci_cols <- c(IGHV = "#0B2A5B", IGKV = "#1B7F3B", IGLV = "#E0A800", TRAV = "#7B2D8B",
+               TRBV = "#0284C7", TRDV = "#92400E", TRGV = "#6B7280")
+func_cols <- c(F = "#28A745", ORF = "#FFC107", P = "#DC3545", Unknown = "#9CA3AF")
+method_cols <- c(Consensus = "#0B2A5B", PWM = "#1B7F3B", `PWM (shared rule)` = "#9CA3AF")
+ord_loci <- function(x) factor(x, levels = intersect(names(loci_cols), unique(x)))
+theme_promise <- function(base = 10) {
+  theme_minimal(base_size = base) +
+    theme(plot.title = element_text(face = "bold", colour = pal[["navy"]]),
+          plot.subtitle = element_text(colour = pal[["grey"]]),
+          panel.grid.minor = element_blank(),
+          strip.text = element_text(face = "bold", colour = pal[["navy"]]),
+          legend.position = "bottom", legend.title = element_text(face = "bold"),
+          axis.title = element_text(colour = pal[["grey"]]))
+}
+fmt_p <- function(p) ifelse(is.na(p), "NA", ifelse(p < 0.001, "<0.001", sprintf("%.3f", p)))
+stars <- function(p) as.character(cut(p, c(-Inf, 0.001, 0.01, 0.05, Inf), labels = c("***", "**", "*", "ns")))
+has_sec <- function(s) s %in% params$sections
+
+# ── Data ─────────────────────────────────────────────────────────────────────
+df_all <- params$data
+df <- df_all
+if (length(params$species)) df <- df[df$SPECIES %in% params$species, , drop = FALSE]
+if (length(params$locus))   df <- df[df$LOCI %in% params$locus, , drop = FALSE]
+if (nrow(df) == 0) stop("No sequence left after applying the species/locus filters.")
+if ("FUNCTIONALITY" %in% names(df)) {
+  f <- as.character(df$FUNCTIONALITY); f[is.na(f) | f == ""] <- "Unknown"; df$FUNCTIONALITY <- f
+}
+ig_loci <- c("IGHV", "IGKV", "IGLV")
+df_ig <- df[df$LOCI %in% ig_loci, , drop = FALSE]
+motifs <- setdiff(sub("^BIN_", "", grep("^BIN_", names(df_ig), value = TRUE)), c("LPART_1", "LPART1"))
+bin_cols <- paste0("BIN_", motifs)
+motifs_ok <- length(motifs) > 0 && nrow(df_ig) > 0
+func_ok <- "FUNCTIONALITY" %in% names(df_ig)
+if (motifs_ok) df_ig[bin_cols] <- lapply(df_ig[bin_cols], function(x) as.integer(!is.na(x) & x == 1))
+
+filter_txt <- paste0(
+  "Species: ", if (length(params$species)) paste(params$species, collapse = ", ") else "all",
+  " | Loci: ", if (length(params$locus)) paste(params$locus, collapse = ", ") else "all")
+
+long_all <- NULL; pres_overall <- NULL; div_tab <- NULL
+div_one <- function(d) {
+  cnt <- colSums(d[, bin_cols, drop = FALSE], na.rm = TRUE)
+  p <- cnt / sum(cnt); p <- p[p > 0]
+  S <- length(p); H <- if (S > 0) -sum(p * log(p)) else NA_real_
+  data.frame(N = nrow(d), `Richness (S)` = S, `Shannon (H')` = round(H, 3),
+             `Simpson (D)` = round(1 - sum(p^2), 3),
+             `Evenness (J)` = if (S > 1) round(H / log(S), 3) else NA_real_, check.names = FALSE)
+}
+if (motifs_ok) {
+  long_all <- df_ig %>%
+    select(LOCI, SPECIES, all_of(bin_cols)) %>%
+    pivot_longer(all_of(bin_cols), names_to = "Motif", values_to = "Present") %>%
+    mutate(Motif = sub("^BIN_", "", Motif))
+  pres_overall <- long_all %>% group_by(Motif) %>%
+    summarise(pct = 100 * mean(Present), .groups = "drop") %>% arrange(desc(pct))
+  div_tab <- df_ig %>% group_by(LOCI) %>% group_modify(~ div_one(.x)) %>% ungroup()
+}
+
+test_presence <- function(x, g) {
+  tab <- table(factor(x, levels = 0:1), g)
+  tab <- tab[, colSums(tab) > 0, drop = FALSE]
+  if (ncol(tab) < 2 || any(rowSums(tab) == 0)) return(list(test = "constant", p = NA_real_, v = NA_real_))
+  chi <- suppressWarnings(chisq.test(tab))
+  v <- sqrt(unname(chi$statistic) / (sum(tab) * min(nrow(tab) - 1, ncol(tab) - 1)))
+  if (all(chi$expected >= 5)) list(test = "Chi-square", p = chi$p.value, v = v)
+  else list(test = "Fisher", p = fisher.test(tab, simulate.p.value = TRUE, B = 10000)$p.value, v = v)
+}
+run_tests <- function(dat, groupvar) {
+  out <- bind_rows(lapply(motifs, function(m) {
+    r <- test_presence(dat[[paste0("BIN_", m)]], dat[[groupvar]])
+    data.frame(Motif = m, Test = r$test, p = r$p, `Cramer's V` = round(r$v, 3), check.names = FALSE)
+  }))
+  out$`p (Bonferroni)` <- p.adjust(out$p, method = "bonferroni")
+  out$Signif. <- stars(out$`p (Bonferroni)`)
+  out$p <- fmt_p(out$p); out$`p (Bonferroni)` <- fmt_p(out$`p (Bonferroni)`)
+  out
+}
+```
+
+```{r info, eval=TRUE}
+info <- data.frame(
+  Item = c("Application", "Report generated", "Dataset", "Filters", "Sections included"),
+  Value = c(paste0(params$app_name, " v", params$app_version),
+            format(Sys.time(), "%Y-%m-%d %H:%M"),
+            paste0(format(nrow(df), big.mark = ","), " sequences, ", n_distinct(df$SPECIES), " species, ",
+                   n_distinct(df$LOCI), " loci"),
+            filter_txt,
+            paste(length(params$sections), "of 11")),
+  stringsAsFactors = FALSE)
+show_table(info, "About this report")
+if (nzchar(params$notes)) note("**Analyst notes.** ", gsub("\n", " ", params$notes))
+if (!motifs_ok) note("No imported regulatory motif (BIN_ columns) was found for immunoglobulins: motif-based sections are skipped.")
+page_break()
+```
+
+```{r overview, eval=has_sec("overview")}
+h1("Dataset overview")
+ov <- data.frame(
+  Item = c("Sequences (after filters)", "Immunoglobulin sequences (IGHV/IGKV/IGLV)", "T-cell receptor sequences",
+           "Species", "Loci", "Subgroups", "Functional genes (F)", "Imported IG motifs"),
+  Value = c(format(nrow(df), big.mark = ","), format(nrow(df_ig), big.mark = ","),
+            format(nrow(df) - nrow(df_ig), big.mark = ","),
+            n_distinct(df$SPECIES), n_distinct(df$LOCI),
+            if ("SUBGROUP" %in% names(df)) n_distinct(df$SUBGROUP) else "NA",
+            if ("FUNCTIONALITY" %in% names(df)) sprintf("%.1f%%", 100 * mean(df$FUNCTIONALITY == "F")) else "NA",
+            if (motifs_ok) paste(motifs, collapse = ", ") else "none"),
+  stringsAsFactors = FALSE)
+show_table(ov, "Dataset summary")
+if (motifs_ok) {
+  top <- pres_overall[1, ]; bot <- pres_overall[nrow(pres_overall), ]
+  n_none <- sum(rowSums(df_ig[, bin_cols, drop = FALSE]) == 0)
+  hi <- div_tab[which.max(div_tab$`Shannon (H')`), ]; lo <- div_tab[which.min(div_tab$`Shannon (H')`), ]
+  bullets <- c(
+    sprintf("**%s** immunoglobulin sequences were analysed (%d species, %d loci).",
+            format(nrow(df_ig), big.mark = ","), n_distinct(df_ig$SPECIES), n_distinct(df_ig$LOCI)),
+    sprintf("The most frequent motif is **%s** (%.1f%% of sequences) and the least frequent is **%s** (%.1f%%).",
+            top$Motif, top$pct, bot$Motif, bot$pct),
+    sprintf("**%s** sequences (%.1f%%) carry none of the imported motifs.",
+            format(n_none, big.mark = ","), 100 * n_none / nrow(df_ig)),
+    sprintf("Motif diversity (Shannon) is highest in **%s** (H' = %.2f) and lowest in **%s** (H' = %.2f).",
+            hi$LOCI, hi$`Shannon (H')`, lo$LOCI, lo$`Shannon (H')`))
+  h2("Key findings")
+  cat(paste0("- ", bullets, collapse = "\n"), "\n\n", sep = "")
+}
+```
+
+```{r desc-a, eval=has_sec("descriptive")}
+h1("Descriptive statistics")
+h2("Sequences by species and locus")
+tab <- df %>% count(SPECIES, LOCI) %>% pivot_wider(names_from = LOCI, values_from = n, values_fill = 0L)
+tab <- as.data.frame(tab)
+tab <- tab[, c("SPECIES", intersect(names(loci_cols), names(tab)))]
+tab$Total <- rowSums(tab[, -1, drop = FALSE])
+tab <- rbind(tab, data.frame(SPECIES = "Total", as.list(colSums(tab[, -1, drop = FALSE])), check.names = FALSE))
+show_table(tab, "Number of sequences per species and locus")
+```
+
+```{r desc-a-plot, eval=has_sec("descriptive"), fig.cap="Number of sequences per species, by locus."}
+cnt <- df %>% count(SPECIES, LOCI) %>% mutate(LOCI = ord_loci(LOCI))
+show_plot(ggplot(cnt, aes(reorder(SPECIES, n, sum), n, fill = LOCI)) +
+  geom_col(width = 0.7) + coord_flip() +
+  scale_fill_manual(values = loci_cols, breaks = names(loci_cols)) +
+  labs(x = NULL, y = "Sequences", fill = "Locus") + theme_promise())
+```
+
+```{r desc-b, eval=has_sec("descriptive") && "FUNCTIONALITY" %in% names(df)}
+h2("Functionality")
+fw <- as.data.frame(df %>% count(LOCI, FUNCTIONALITY) %>%
+  pivot_wider(names_from = FUNCTIONALITY, values_from = n, values_fill = 0L))
+num_cols <- setdiff(names(fw), "LOCI")
+fw$Total <- rowSums(fw[, num_cols, drop = FALSE])
+if ("F" %in% names(fw)) fw$`Functional (%)` <- round(100 * fw$F / fw$Total, 1)
+ord <- c("LOCI", intersect(c("F", "ORF", "P"), names(fw)), setdiff(num_cols, c("F", "ORF", "P")),
+         "Total", intersect("Functional (%)", names(fw)))
+fw <- fw[match(intersect(names(loci_cols), fw$LOCI), fw$LOCI), ord]
+show_table(fw, "Functionality by locus (F = functional, ORF = open reading frame, P = pseudogene)", digits = 1)
+```
+
+```{r desc-b-plot, eval=has_sec("descriptive") && "FUNCTIONALITY" %in% names(df), fig.cap="Functionality composition of each locus (percentage of sequences)."}
+fp <- df %>% count(LOCI, FUNCTIONALITY) %>% group_by(LOCI) %>% mutate(pct = 100 * n / sum(n)) %>% ungroup() %>%
+  mutate(LOCI = ord_loci(LOCI))
+show_plot(ggplot(fp, aes(LOCI, pct, fill = FUNCTIONALITY)) +
+  geom_col(width = 0.7) +
+  geom_text(aes(label = ifelse(pct >= 6, sprintf("%.0f%%", pct), "")),
+            position = position_stack(vjust = 0.5), size = 3, colour = "#111827") +
+  scale_fill_manual(values = func_cols) +
+  labs(x = NULL, y = "Share of sequences (%)", fill = "Functionality") + theme_promise())
+```
+
+```{r desc-c, eval=has_sec("descriptive") && "LENGTH_NT" %in% names(df)}
+safe({
+  dl <- df; dl$LENGTH_NT <- suppressWarnings(as.numeric(dl$LENGTH_NT)); dl <- dl[!is.na(dl$LENGTH_NT), , drop = FALSE]
+  if (nrow(dl) > 0) {
+    h2("5′UTR length")
+    ls <- dl %>% group_by(LOCI) %>%
+      summarise(N = n(), Median = median(LENGTH_NT), Q1 = quantile(LENGTH_NT, .25), Q3 = quantile(LENGTH_NT, .75),
+                Min = min(LENGTH_NT), Max = max(LENGTH_NT), .groups = "drop") %>%
+      arrange(match(LOCI, names(loci_cols)))
+    show_table(ls, "5′UTR length (nt) by locus", digits = 0)
+  }
+})
+```
+
+```{r desc-c-plot, eval=has_sec("descriptive") && "LENGTH_NT" %in% names(df), fig.cap="Distribution of 5′UTR length by locus (log scale)."}
+safe({
+  dl <- df; dl$LENGTH_NT <- suppressWarnings(as.numeric(dl$LENGTH_NT)); dl <- dl[!is.na(dl$LENGTH_NT) & dl$LENGTH_NT > 0, , drop = FALSE]
+  if (nrow(dl) > 0) {
+    dl$LOCI <- ord_loci(dl$LOCI)
+    show_plot(ggplot(dl, aes(LOCI, LENGTH_NT, fill = LOCI)) + geom_boxplot(outlier.size = 0.6, width = 0.6) +
+      scale_fill_manual(values = loci_cols, guide = "none") + scale_y_log10() +
+      labs(x = NULL, y = "5′UTR length (nt, log scale)") + theme_promise())
+  }
+})
+```
+
+```{r freq-a, eval=has_sec("freq")}
+h1("Motif presence frequencies")
+if (!motifs_ok) {
+  note("No imported motif is available for immunoglobulins.")
+} else {
+  para("Frequency is the percentage of immunoglobulin sequences carrying each motif. Analyses are restricted to IGHV, IGKV and IGLV.")
+  h2("By locus")
+  fw <- long_all %>% group_by(LOCI, Motif) %>% summarise(pct = round(100 * mean(Present), 1), .groups = "drop") %>%
+    pivot_wider(names_from = Motif, values_from = pct)
+  fw <- as.data.frame(left_join(df_ig %>% count(LOCI, name = "N"), fw, by = "LOCI"))
+  fw <- fw[match(intersect(names(loci_cols), fw$LOCI), fw$LOCI), ]
+  show_table(fw, "Motif presence (%) by locus", digits = 1)
+}
+```
+
+```{r freq-a-plot, eval=has_sec("freq") && motifs_ok, fig.cap="Motif presence (%) by locus."}
+fr <- long_all %>% group_by(LOCI, Motif) %>% summarise(pct = 100 * mean(Present), .groups = "drop") %>%
+  mutate(LOCI = ord_loci(LOCI))
+show_plot(ggplot(fr, aes(Motif, LOCI, fill = pct)) +
+  geom_tile(colour = "white", linewidth = 0.8) +
+  geom_text(aes(label = sprintf("%.1f", pct), colour = pct > 55), size = 3.4, show.legend = FALSE) +
+  scale_colour_manual(values = c(`TRUE` = "white", `FALSE` = "#111827")) +
+  scale_fill_gradient(low = "#EFF6FF", high = pal[["navy"]], limits = c(0, 100), name = "Presence (%)") +
+  scale_y_discrete(limits = rev) + labs(x = NULL, y = NULL) +
+  theme_promise() + theme(panel.grid = element_blank()))
+```
+
+```{r freq-b, eval=has_sec("freq") && motifs_ok}
+h2("By species")
+n_sp <- df_ig %>% count(SPECIES, name = "N")
+fs <- long_all %>% group_by(SPECIES, Motif) %>% summarise(pct = round(100 * mean(Present), 1), .groups = "drop") %>%
+  pivot_wider(names_from = Motif, values_from = pct)
+fs <- as.data.frame(left_join(n_sp, fs, by = "SPECIES"))
+show_table(fs, "Motif presence (%) by species (immunoglobulins)", digits = 1)
+if (any(fs$N < 20)) note("Frequencies based on fewer than 20 sequences are unstable and should be interpreted with caution.")
+```
+
+```{r freq-c, eval=has_sec("freq") && motifs_ok}
+safe({
+  h2("Association with locus")
+  para("For each motif, a Chi-square test (Fisher's exact test when an expected count is below 5) assesses whether presence depends on the locus. P-values are Bonferroni-corrected across motifs; Cramér's V measures the effect size.")
+  show_table(run_tests(df_ig, "LOCI"), "Association between motif presence and locus")
+})
+```
+
+```{r cf, eval=has_sec("conservation_func") && motifs_ok && func_ok}
+safe({
+  h1("Conservation by functionality")
+  dfc <- df_ig[df_ig$FUNCTIONALITY %in% c("F", "ORF", "P"), , drop = FALSE]
+  if (n_distinct(dfc$FUNCTIONALITY) < 2) {
+    note("Fewer than two functionality classes (F, ORF, P) are available.")
+  } else {
+    para("Is motif presence related to the functional status of the gene? Unknown functionality is excluded.")
+    lf <- dfc %>% select(FUNCTIONALITY, all_of(bin_cols)) %>%
+      pivot_longer(all_of(bin_cols), names_to = "Motif", values_to = "Present") %>%
+      mutate(Motif = sub("^BIN_", "", Motif))
+    cf <- lf %>% group_by(Motif, FUNCTIONALITY) %>%
+      summarise(N = n(), pct = round(100 * mean(Present), 1), .groups = "drop")
+    cfw <- cf %>% mutate(lab = sprintf("%.1f%% (n=%d)", pct, N)) %>% select(Motif, FUNCTIONALITY, lab) %>%
+      pivot_wider(names_from = FUNCTIONALITY, values_from = lab)
+    show_table(as.data.frame(cfw), "Motif presence by functionality")
+    show_table(run_tests(dfc, "FUNCTIONALITY"), "Association between motif presence and functionality")
+    cf$FUNCTIONALITY <- factor(cf$FUNCTIONALITY, levels = c("F", "ORF", "P"))
+    assign("cf_plot", cf, envir = globalenv())
+  }
+})
+```
+
+```{r cf-plot, eval=has_sec("conservation_func") && motifs_ok && func_ok && exists("cf_plot"), fig.cap="Motif presence (%) by functionality."}
+show_plot(ggplot(cf_plot, aes(Motif, pct, fill = FUNCTIONALITY)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7) +
+  scale_fill_manual(values = func_cols) +
+  labs(x = NULL, y = "Presence (%)", fill = "Functionality") + theme_promise())
+```
+
+```{r reg, eval=has_sec("regression") && motifs_ok && func_ok}
+safe({
+  h1("Logistic regression")
+  para("For each motif, a logistic regression models the probability of presence as a function of locus, species and functionality (", "HAS_MOTIF ~ LOCI + SPECIES + FUNCTIONALITY", "). The odds ratio (OR) compares each level with the reference level: OR > 1 increases and OR < 1 decreases the odds of motif presence.")
+  d <- df_ig[df_ig$FUNCTIONALITY %in% c("F", "ORF", "P"), , drop = FALSE]
+  vars <- c("LOCI", "SPECIES", "FUNCTIONALITY")
+  vars <- vars[vapply(vars, function(v) n_distinct(d[[v]]) > 1, logical(1))]
+  for (v in vars) {
+    lv <- sort(unique(d[[v]]))
+    ref <- switch(v,
+      LOCI = if ("IGHV" %in% lv) "IGHV" else lv[1],
+      SPECIES = if ("Homo sapiens" %in% lv) "Homo sapiens" else names(sort(table(d$SPECIES), decreasing = TRUE))[1],
+      FUNCTIONALITY = if ("F" %in% lv) "F" else lv[1])
+    d[[v]] <- relevel(factor(d[[v]]), ref = ref)
+  }
+  if (length(vars) == 0) stop("Not enough variability in locus, species or functionality.")
+  refs <- vapply(vars, function(v) levels(d[[v]])[1], character(1))
+  rhs <- paste(vars, collapse = " + ")
+  fits <- lapply(motifs, function(m) {
+    d$y <- d[[paste0("BIN_", m)]]
+    if (length(unique(d$y)) < 2) return(NULL)
+    suppressWarnings(glm(as.formula(paste("y ~", rhs)), data = d, family = binomial()))
+  })
+  names(fits) <- motifs
+  clean_term <- function(t) { for (v in vars) if (startsWith(t, v)) return(paste0(v, ": ", substring(t, nchar(v) + 1))); t }
+  ct <- bind_rows(lapply(motifs, function(m) {
+    fit <- fits[[m]]; if (is.null(fit)) return(NULL)
+    cf <- summary(fit)$coefficients; ci <- suppressWarnings(confint.default(fit))
+    keep <- rownames(cf) != "(Intercept)"
+    data.frame(Motif = m, Term = vapply(rownames(cf)[keep], clean_term, character(1)),
+               OR = exp(cf[keep, 1]), Lower = exp(ci[keep, 1]), Upper = exp(ci[keep, 2]),
+               p = cf[keep, 4], stringsAsFactors = FALSE, row.names = NULL)
+  }))
+  if (is.null(ct) || nrow(ct) == 0) stop("No model could be fitted (motifs are constant).")
+  note("Reference levels: ", paste(vars, refs, sep = " = ", collapse = "; "), ".")
+  tt <- ct
+  tt$`OR (95% CI)` <- ifelse(is.finite(tt$Upper) & tt$Upper < 1000 & tt$Lower > 0.001,
+                             sprintf("%.2f (%.2f–%.2f)", tt$OR, tt$Lower, tt$Upper), "unstable (sparse data)")
+  tt$Signif. <- stars(tt$p); tt$p <- fmt_p(tt$p)
+  show_table(tt[, c("Motif", "Term", "OR (95% CI)", "p", "Signif.")], "Odds ratios of motif presence")
+  auc <- function(y, p) { n1 <- sum(y == 1); n0 <- sum(y == 0); if (n1 == 0 || n0 == 0) return(NA_real_)
+    (sum(rank(p)[y == 1]) - n1 * (n1 + 1) / 2) / (n1 * n0) }
+  perf <- bind_rows(lapply(motifs, function(m) { fit <- fits[[m]]; if (is.null(fit)) return(NULL)
+    data.frame(Motif = m, N = length(fit$y), `Present (n)` = sum(fit$y), `AUC (in-sample)` = round(auc(fit$y, fitted(fit)), 3), check.names = FALSE) }))
+  show_table(perf, "Model performance (in-sample AUC; cross-validated metrics are available in the application)")
+  assign("reg_plot_data", ct, envir = globalenv())
+})
+```
+
+```{r reg-plot, eval=has_sec("regression") && motifs_ok && func_ok && exists("reg_plot_data"), fig.height=5.2, fig.cap="Forest plot of odds ratios (log scale). Values are clipped to 0.01–100; filled points are significant at p < 0.05."}
+rp <- reg_plot_data
+rp$sig <- rp$p < 0.05
+rp[c("OR", "Lower", "Upper")] <- lapply(rp[c("OR", "Lower", "Upper")], function(x) pmin(pmax(x, 0.01), 100))
+rp$Term <- factor(rp$Term, levels = rev(unique(rp$Term)))
+show_plot(ggplot(rp, aes(OR, Term, xmin = Lower, xmax = Upper, colour = sig)) +
+  geom_vline(xintercept = 1, linetype = 2, colour = pal[["grey"]]) +
+  geom_pointrange(size = 0.35) +
+  scale_x_log10() + scale_colour_manual(values = c(`TRUE` = pal[["navy"]], `FALSE` = "#9CA3AF"), guide = "none") +
+  facet_wrap(~Motif, ncol = 2) + labs(x = "Odds ratio (log scale)", y = NULL) + theme_promise(9))
+```
+
+```{r cooc, eval=has_sec("cooccurrence") && motifs_ok}
+safe({
+  h1("Motif co-occurrence")
+  if (length(motifs) < 2) {
+    note("At least two imported motifs are required.")
+  } else {
+    para("Pairwise association of motif presence across immunoglobulin sequences. Phi is the correlation between two presence/absence variables (positive = tend to co-occur, negative = tend to exclude each other); p-values come from Fisher's exact test, Bonferroni-corrected across pairs.")
+    prs <- utils::combn(motifs, 2, simplify = FALSE)
+    co <- bind_rows(lapply(prs, function(pr) {
+      x <- df_ig[[paste0("BIN_", pr[1])]]; y <- df_ig[[paste0("BIN_", pr[2])]]
+      n11 <- sum(x == 1 & y == 1); n10 <- sum(x == 1 & y == 0); n01 <- sum(x == 0 & y == 1); n00 <- sum(x == 0 & y == 0)
+      p <- tryCatch(fisher.test(matrix(c(n11, n10, n01, n00), 2))$p.value, error = function(e) NA_real_)
+      data.frame(`Motif A` = pr[1], `Motif B` = pr[2], `Both (n)` = n11, `Only A` = n10, `Only B` = n01, Neither = n00,
+                 OR = ((n11 + .5) * (n00 + .5)) / ((n10 + .5) * (n01 + .5)),
+                 Phi = suppressWarnings(cor(x, y)), p = p, check.names = FALSE)
+    }))
+    co$`p (Bonferroni)` <- p.adjust(co$p, method = "bonferroni")
+    co$Signif. <- stars(co$`p (Bonferroni)`)
+    co$p <- fmt_p(co$p); co$`p (Bonferroni)` <- fmt_p(co$`p (Bonferroni)`)
+    show_table(co, "Pairwise motif co-occurrence")
+    assign("co_plot_data", co, envir = globalenv())
+  }
+})
+```
+
+```{r cooc-plot, eval=has_sec("cooccurrence") && motifs_ok && exists("co_plot_data"), fig.height=3.8, fig.cap="Phi coefficient between motif presence profiles."}
+cp <- co_plot_data
+sym <- bind_rows(data.frame(A = cp$`Motif A`, B = cp$`Motif B`, Phi = cp$Phi),
+                 data.frame(A = cp$`Motif B`, B = cp$`Motif A`, Phi = cp$Phi))
+show_plot(ggplot(sym, aes(A, B, fill = Phi)) + geom_tile(colour = "white", linewidth = 0.8) +
+  geom_text(aes(label = sprintf("%.2f", Phi)), size = 3.4) +
+  scale_fill_gradient2(low = "#B91C1C", mid = "white", high = "#1D4ED8", limits = c(-1, 1), name = "Phi") +
+  labs(x = NULL, y = NULL) + theme_promise() + theme(panel.grid = element_blank()))
+```
+
+```{r div-a, eval=has_sec("diversity") && motifs_ok}
+h1("Motif diversity")
+para("Indices are computed on motif presence counts: p~i~ is the share of motif *i* among all detections of a group. Shannon H' = −Σ p~i~ ln p~i~; Simpson D = 1 − Σ p~i~²; evenness J = H' / ln S.")
+h2("By locus")
+show_table(div_tab, "Diversity indices by locus")
+sp_div <- df_ig %>% group_by(SPECIES) %>% group_modify(~ div_one(.x)) %>% ungroup()
+h2("By species")
+show_table(sp_div, "Diversity indices by species")
+```
+
+```{r div-plot, eval=has_sec("diversity") && motifs_ok, fig.cap="Diversity indices by locus."}
+dl <- div_tab %>% select(LOCI, `Shannon (H')`, `Simpson (D)`, `Evenness (J)`) %>%
+  pivot_longer(-LOCI, names_to = "Index", values_to = "Value") %>% mutate(LOCI = ord_loci(LOCI))
+show_plot(ggplot(dl, aes(LOCI, Value, fill = LOCI)) + geom_col(width = 0.65) +
+  geom_text(aes(label = sprintf("%.2f", Value)), vjust = -0.4, size = 3) +
+  scale_fill_manual(values = loci_cols, guide = "none") +
+  facet_wrap(~Index, scales = "free_y", nrow = 1) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  labs(x = NULL, y = NULL) + theme_promise())
+```
+
+```{r div-box, eval=has_sec("diversity") && motifs_ok, fig.cap="Number of motifs per sequence, by locus."}
+dn <- df_ig; dn$N_MOTIFS <- rowSums(dn[, bin_cols, drop = FALSE]); dn$LOCI <- ord_loci(dn$LOCI)
+kw <- if (n_distinct(dn$LOCI) > 1) kruskal.test(N_MOTIFS ~ LOCI, data = dn)$p.value else NA_real_
+show_plot(ggplot(dn, aes(LOCI, N_MOTIFS, fill = LOCI)) + geom_boxplot(width = 0.6, outlier.size = 0.6) +
+  scale_fill_manual(values = loci_cols, guide = "none") +
+  labs(x = NULL, y = "Motifs per sequence", subtitle = paste("Kruskal–Wallis p =", fmt_p(kw))) + theme_promise())
+```
+
+```{r perm, eval=has_sec("permanova") && motifs_ok}
+safe({
+  h1("PERMANOVA")
+  if (!requireNamespace("vegan", quietly = TRUE)) stop("package 'vegan' is not installed.")
+  para("Permutational multivariate analysis of variance tests whether motif presence profiles (Hamming distance on presence/absence) differ between locus and species. R² is the share of profile variation explained by each factor (sequential terms, 499 permutations).")
+  mat <- as.matrix(df_ig[, bin_cols, drop = FALSE]); meta <- df_ig[, c("LOCI", "SPECIES")]
+  set.seed(42)
+  if (nrow(mat) > 1500) { idx <- sample(nrow(mat), 1500); mat <- mat[idx, , drop = FALSE]; meta <- meta[idx, , drop = FALSE]
+    note("A random subsample of 1,500 sequences was used for computational reasons.") }
+  dm <- stats::dist(mat, method = "manhattan")
+  tm <- c("LOCI", "SPECIES")[vapply(c("LOCI", "SPECIES"), function(v) n_distinct(meta[[v]]) > 1, logical(1))]
+  if (length(tm) == 0) stop("a single locus and species remain after filtering.")
+  ad <- vegan::adonis2(stats::as.formula(paste("dm ~", paste(tm, collapse = " + "))), data = meta,
+                       permutations = 499, by = "terms")
+  res <- data.frame(Term = rownames(ad), Df = ad$Df, `Sum of squares` = round(ad$SumOfSqs, 2),
+                    `R2` = round(ad$R2, 3), `F` = round(ad$F, 2),
+                    p = ifelse(is.na(ad$`Pr(>F)`), "", fmt_p(ad$`Pr(>F)`)), check.names = FALSE)
+  show_table(res, "PERMANOVA on motif presence profiles")
+  note("PERMANOVA is sensitive to differences in dispersion between groups; a significant result does not by itself indicate which groups differ.")
+  pc <- stats::cmdscale(dm, k = 2)
+  assign("pcoa_data", data.frame(PCo1 = pc[, 1], PCo2 = pc[, 2], LOCI = ord_loci(meta$LOCI)), envir = globalenv())
+})
+```
+
+```{r perm-plot, eval=has_sec("permanova") && motifs_ok && exists("pcoa_data"), fig.cap="PCoA of motif presence profiles (points are jittered because many sequences share the same profile)."}
+show_plot(ggplot(pcoa_data, aes(PCo1, PCo2, colour = LOCI)) +
+  geom_jitter(width = 0.08, height = 0.08, alpha = 0.55, size = 1.3) +
+  scale_colour_manual(values = loci_cols, breaks = names(loci_cols)) +
+  labs(colour = "Locus") + theme_promise())
+```
+
+```{r dist, eval=has_sec("distances") && any(grepl("^DIST_", names(df_ig))) && nrow(df_ig) > 0}
+safe({
+  h1("Motif distances to L-PART1")
+  para("Distance = POS_START_LPART_1 − POS_END_motif, in nucleotides (negative values are excluded).")
+  dcols <- grep("^DIST_", names(df_ig), value = TRUE)
+  dl <- df_ig %>% select(LOCI, all_of(dcols)) %>%
+    pivot_longer(-LOCI, names_to = "Motif", values_to = "Distance") %>%
+    mutate(Motif = sub("^DIST_", "", Motif), Distance = suppressWarnings(as.numeric(Distance))) %>%
+    filter(!is.na(Distance))
+  if (nrow(dl) == 0) stop("no distance value available.")
+  ds <- dl %>% group_by(LOCI, Motif) %>%
+    summarise(N = n(), Median = median(Distance), Q1 = quantile(Distance, .25), Q3 = quantile(Distance, .75),
+              Min = min(Distance), Max = max(Distance), .groups = "drop") %>%
+    arrange(match(LOCI, names(loci_cols)), Motif)
+  show_table(ds, "Distance to L-PART1 (nt)", digits = 0)
+  dl$LOCI <- ord_loci(dl$LOCI)
+  assign("dist_plot_data", dl, envir = globalenv())
+})
+```
+
+```{r dist-plot, eval=has_sec("distances") && exists("dist_plot_data"), fig.cap="Distance of each motif to L-PART1, by locus."}
+show_plot(ggplot(dist_plot_data, aes(Motif, Distance, fill = LOCI)) +
+  geom_boxplot(outlier.size = 0.6, width = 0.7) +
+  scale_fill_manual(values = loci_cols, breaks = names(loci_cols)) +
+  labs(x = NULL, y = "Distance (nt)", fill = "Locus") + theme_promise() +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1)))
+```
+
+```{r partial, eval=has_sec("partial")}
+safe({
+  h1("Partial genes (sequences without regulatory motif)")
+  para("A sequence is listed here when none of the imported regulatory motifs was detected (L-PART1 is not counted as a regulatory motif).")
+  pt <- params$partial
+  if (is.null(pt) || nrow(pt) == 0) {
+    note("No sequence without motif was identified.")
+  } else {
+    if (length(params$species) && "SPECIES" %in% names(pt)) pt <- pt[pt$SPECIES %in% params$species, , drop = FALSE]
+    if (length(params$locus) && "LOCI" %in% names(pt))     pt <- pt[pt$LOCI %in% params$locus, , drop = FALSE]
+    if (!all(c("SPECIES", "LOCI") %in% names(pt))) {
+      para("**", nrow(pt), "** sequences without motif.")
+    } else {
+      tot <- df %>% count(SPECIES, LOCI, name = "Total")
+      pn <- pt %>% count(SPECIES, LOCI, name = "Without motif") %>%
+        left_join(tot, by = c("SPECIES", "LOCI")) %>%
+        mutate(`Share (%)` = round(100 * `Without motif` / Total, 1)) %>%
+        arrange(SPECIES, match(LOCI, names(loci_cols)))
+      show_table(as.data.frame(pn), "Sequences without any regulatory motif", digits = 1)
+      assign("partial_plot_data", pn, envir = globalenv())
+    }
+  }
+})
+```
+
+```{r partial-plot, eval=has_sec("partial") && exists("partial_plot_data"), fig.cap="Share of sequences without any regulatory motif, by species and locus."}
+pp <- partial_plot_data; pp$LOCI <- ord_loci(pp$LOCI)
+show_plot(ggplot(pp, aes(SPECIES, `Share (%)`, fill = LOCI)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7) +
+  scale_fill_manual(values = loci_cols, breaks = names(loci_cols)) +
+  labs(x = NULL, y = "Sequences without motif (%)", fill = "Locus") + theme_promise() +
+  theme(axis.text.x = element_text(angle = 25, hjust = 1)))
+```
+
+```{r scan, eval=has_sec("scanner")}
+safe({
+  h1("Motif scanner")
+  para("Automatic motif detection compares a deterministic **Consensus** baseline (fixed literature patterns) with a probabilistic **PWM** approach (calibrated per subgroup, p-values corrected by Benjamini–Hochberg). Both are evaluated against confirmed annotations and against nucleotide-shuffled negative controls.")
+  summ_hits <- function(h, method) {
+    if (is.null(h) || nrow(h) == 0) return(NULL)
+    h %>% distinct(ALLELE_ID, SPECIES, MOTIF, LOCI) %>% count(LOCI, MOTIF, name = "Alleles") %>% mutate(Method = method)
+  }
+  sd <- bind_rows(summ_hits(params$scanner_cons, "Consensus"), summ_hits(params$scanner_pwm, "PWM"))
+  if (!is.null(sd) && nrow(sd) > 0) {
+    h2("Detections")
+    sw <- sd %>% pivot_wider(names_from = Method, values_from = Alleles, values_fill = 0L) %>%
+      rename(Locus = LOCI, Motif = MOTIF) %>% arrange(match(Locus, names(loci_cols)), Motif)
+    show_table(as.data.frame(sw), "Number of alleles with a detected motif, by method")
+    assign("scan_det_data", sd, envir = globalenv())
+  }
+  cmp <- params$scanner_cmp
+  if (is.null(cmp) || nrow(cmp) == 0) {
+    note("The method comparison was not computed in this session (tick the comparison option before running the scan).")
+  } else {
+    h2("Performance against confirmed annotations")
+    met <- function(tp, fn, tn, fp) data.frame(
+      Sensitivity = tp / (tp + fn), Specificity = tn / (tn + fp), Precision = tp / (tp + fp),
+      `F1-score` = 2 * (tp / (tp + fp)) * (tp / (tp + fn)) / ((tp / (tp + fp)) + (tp / (tp + fn))), check.names = FALSE)
+    pooled <- cmp %>% group_by(Method) %>% summarise(across(c(N, tp, fn, tn, fp), sum), .groups = "drop")
+    pooled <- bind_cols(pooled[, c("Method", "N")], met(pooled$tp, pooled$fn, pooled$tn, pooled$fp))
+    show_table(as.data.frame(pooled), "Overall performance by method (all loci and motifs pooled)", digits = 3)
+    show_table(cmp %>% select(Method, Locus, Motif, N, Sensitivity = sensitivity, Specificity = specificity,
+                              Precision = precision, `F1-score` = f1_score, TP = tp, FN = fn, TN = tn, FP = fp),
+               "Performance by method, locus and motif", digits = 3)
+    note("E_BOX and TATA_BOX use the same deterministic rule in both methods, so their results agree by construction. PWM is evaluated by 5-fold cross-validation with calibration rebuilt on training folds only.")
+    assign("scan_cmp_data", cmp, envir = globalenv())
+  }
+})
+```
+
+```{r scan-plot-a, eval=has_sec("scanner") && exists("scan_det_data"), fig.cap="Alleles with a detected motif, by method."}
+show_plot(ggplot(scan_det_data %>% mutate(LOCI = ord_loci(LOCI)), aes(MOTIF, Alleles, fill = Method)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7) +
+  scale_fill_manual(values = method_cols) + facet_wrap(~LOCI, nrow = 1) +
+  labs(x = NULL, y = "Alleles") + theme_promise() + theme(axis.text.x = element_text(angle = 35, hjust = 1)))
+```
+
+```{r scan-plot-b, eval=has_sec("scanner") && exists("scan_cmp_data"), fig.cap="F1-score of each method by locus and motif."}
+sc <- scan_cmp_data; sc$Locus <- ord_loci(sc$Locus)
+show_plot(ggplot(sc, aes(Motif, f1_score, fill = Method)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7) +
+  scale_fill_manual(values = method_cols) + facet_wrap(~Locus, nrow = 1) +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(x = NULL, y = "F1-score") + theme_promise() + theme(axis.text.x = element_text(angle = 35, hjust = 1)))
+```
+
+```{r methods, eval=length(params$sections) > 0}
+h1("Methods summary")
+mtx <- c(
+  overview = "**Dataset overview**: counts after applying the species/locus filters; key findings are derived from the immunoglobulin sequences.",
+  descriptive = "**Descriptive statistics**: counts, functionality (F/ORF/P) and 5′UTR length summaries.",
+  freq = "**Presence frequencies**: percentage of sequences carrying each motif; association with locus by Chi-square or Fisher's exact test (Bonferroni across motifs), effect size by Cramér's V.",
+  conservation_func = "**Conservation by functionality**: same tests, comparing F, ORF and P genes.",
+  regression = "**Logistic regression**: HAS_MOTIF ~ LOCI + SPECIES + FUNCTIONALITY; odds ratios with Wald 95% confidence intervals; in-sample AUC.",
+  cooccurrence = "**Co-occurrence**: phi coefficient and Fisher's exact test for each motif pair (Bonferroni).",
+  diversity = "**Diversity**: Shannon, Simpson, richness and evenness computed on motif presence counts; Kruskal–Wallis test on motifs per sequence.",
+  permanova = "**PERMANOVA**: Hamming distance between presence profiles, sequential terms, 499 permutations; PCoA for visualisation.",
+  distances = "**Distances**: POS_START_LPART_1 − POS_END_motif, negative values excluded.",
+  partial = "**Partial genes**: sequences with none of the imported regulatory motifs.",
+  scanner = "**Motif scanner**: Consensus (fixed patterns) vs PWM (per-subgroup calibration, Monte Carlo null, Benjamini–Hochberg), compared with confirmed annotations and shuffled controls.")
+sel <- intersect(names(mtx), params$sections)
+cat(paste0("- ", mtx[sel], collapse = "\n"), "\n\n", sep = "")
+para("Significance codes: \\*\\*\\* p < 0.001, \\*\\* p < 0.01, \\* p < 0.05, ns = not significant. Unless stated otherwise, p-values are two-sided.")
+```
+
+```{r repro, eval=isTRUE(params$include_repro)}
+h1("Reproducibility")
+si <- sessionInfo()
+info2 <- data.frame(
+  Item = c("Application", "Application release", "Report generated", "R", "Platform",
+           "Dataset (rows × columns)", "Filters", "Sections"),
+  Value = c(paste(params$app_name, params$app_version), params$app_release,
+            format(Sys.time(), "%Y-%m-%d %H:%M:%S %Z"), si$R.version$version.string, si$platform,
+            paste(nrow(df_all), "×", ncol(df_all)), filter_txt, paste(params$sections, collapse = ", ")),
+  stringsAsFactors = FALSE)
+show_table(info2, "Report parameters")
+pk <- c(si$otherPkgs, si$loadedOnly)
+pk <- pk[names(pk) %in% c("dplyr", "tidyr", "ggplot2", "knitr", "rmarkdown", "purrr", "vegan", "shiny", "DT")]
+if (length(pk))
+  show_table(data.frame(Package = names(pk), Version = vapply(pk, function(x) as.character(x$Version), "")),
+             "Main package versions")
+h2("How to cite")
+para(params$app_citation)
+```

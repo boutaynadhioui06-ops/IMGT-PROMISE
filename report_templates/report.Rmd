@@ -1,0 +1,190 @@
+---
+title: "IMGT/PROMISE — Analysis Report"
+date: "`r format(Sys.Date(), '%Y-%m-%d')`"
+output:
+  word_document:
+    toc: true
+    toc_depth: 2
+  pdf_document:
+    toc: true
+    toc_depth: 2
+    latex_engine: xelatex
+  md_document:
+    variant: gfm
+    toc: true
+params:
+  species:         NULL
+  sections:        NULL
+  dataset_summary: NULL
+  tableau:         NULL
+  freq:            NULL
+  diversity:       NULL
+  clustering:      NULL
+  identity:        NULL
+  regression:      NULL
+  cons_func:       NULL
+  scanner:         NULL
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE, warning = FALSE, message = FALSE,
+  fig.width = 8, fig.height = 5, dpi = 200
+)
+sections <- params$sections %||% character(0)
+has <- function(x) x %in% sections
+`%||%` <- function(a, b) if (is.null(a) || length(a) == 0) b else a
+```
+
+# IMGT/PROMISE — Automatically Generated Report
+
+This report was generated automatically from the current state of the
+IMGT/PROMISE application, reflecting the parameters and analyses selected
+by the user at the time of export.
+
+---
+
+## 1. Dataset Overview
+
+```{r dataset-summary, results='asis'}
+ds <- params$dataset_summary
+if (!is.null(ds)) {
+  cat("**Total sequences:** ", ds$n, "\n\n")
+  cat("**Loci included:** ", paste(sort(unique(ds$loci)), collapse = ", "), "\n\n")
+  if (!is.null(params$species) && nzchar(params$species))
+    cat("**Species focus (descriptive table):** ", params$species, "\n\n")
+} else {
+  cat("_Dataset not built at export time._\n\n")
+}
+```
+
+---
+
+```{r tableau-section, results='asis', eval=has("tableau")}
+cat("## 2. Descriptive Table by Species\n\n")
+if (!is.null(params$tableau) && nrow(params$tableau) > 0) {
+  print(knitr::kable(params$tableau, digits = 2))
+} else {
+  cat("_No descriptive table was generated before export._\n\n")
+}
+```
+
+```{r freq-section, results='asis', eval=has("freq")}
+cat("## 3. Motif Presence Frequencies\n\n")
+fr <- params$freq
+if (!is.null(fr) && !is.null(fr$data) && nrow(fr$data) > 0) {
+  tryCatch({
+    p <- plot_motif_frequencies(fr$data, grouping = "species", interactive = FALSE)
+    print(p)
+  }, error = function(e) cat("_Plot could not be rendered: ", e$message, "_\n\n"))
+  cat("\n**Statistical tests (Chi-square / Fisher, Bonferroni-corrected):**\n\n")
+  if (!is.null(fr$stat_tests) && nrow(fr$stat_tests) > 0) {
+    print(knitr::kable(fr$stat_tests, digits = 4))
+  } else {
+    cat("_No statistical tests available._\n\n")
+  }
+} else {
+  cat("_No frequency analysis was generated before export._\n\n")
+}
+```
+
+```{r diversity-section, results='asis', eval=has("diversity")}
+cat("## 4. Motif Diversity\n\n")
+dv <- params$diversity
+if (!is.null(dv) && !is.null(dv$data) && nrow(dv$data) > 0) {
+  print(knitr::kable(dv$data, digits = 3))
+  cat("\n**Diversity indices** (Shannon, Simpson, Richness, Evenness) summarize how ",
+      "varied motif profiles are within each group.\n\n")
+  if (!is.null(dv$tests) && nrow(dv$tests) > 0) {
+    cat("\n**Kruskal-Wallis tests:**\n\n")
+    print(knitr::kable(dv$tests, digits = 4))
+  }
+} else {
+  cat("_No diversity analysis was generated before export._\n\n")
+}
+```
+
+```{r clustering-section, results='asis', eval=has("clustering")}
+cat("## 5. Hierarchical Clustering\n\n")
+cl <- params$clustering
+if (!is.null(cl) && !is.null(cl$hc)) {
+  tryCatch({
+    plot(cl$hc, main = "Hierarchical Clustering", xlab = "Subgroups",
+         ylab = "Height (dissimilarity)", sub = "", cex = 0.7)
+  }, error = function(e) cat("_Dendrogram could not be rendered._\n\n"))
+  if (!is.null(cl$assignments)) {
+    df_assign <- data.frame(
+      Subgroup = names(cl$assignments),
+      Cluster  = as.integer(cl$assignments)
+    )
+    cat("\n**Cluster assignments:**\n\n")
+    print(knitr::kable(df_assign))
+  }
+} else {
+  cat("_No clustering analysis was generated before export._\n\n")
+}
+```
+
+```{r identity-section, results='asis', eval=has("identity")}
+cat("## 6. Sequence Identity\n\n")
+idn <- params$identity
+if (!is.null(idn) && nrow(idn) > 0) {
+  print(knitr::kable(head(idn, 50), digits = 2))
+  if (nrow(idn) > 50) cat("\n_(table truncated to first 50 rows)_\n\n")
+} else {
+  cat("_No sequence identity analysis was generated before export._\n\n")
+}
+```
+
+```{r regression-section, results='asis', eval=has("regression")}
+cat("## 7. Logistic Regression\n\n")
+rg <- params$regression
+if (!is.null(rg) && !is.null(rg$data) && nrow(rg$data) > 0) {
+  print(knitr::kable(rg$data, digits = 3))
+  if (!is.null(rg$cv) && !is.null(rg$cv$metrics_global)) {
+    m <- rg$cv$metrics_global
+    cat("\n**Cross-validated performance:**\n\n")
+    cat("- Accuracy: ", round(m$Accuracy, 3), "\n")
+    cat("- AUC: ", round(m$AUC, 3), "\n")
+    cat("- F1: ", round(m$F1, 3), "\n\n")
+  }
+} else {
+  cat("_No logistic regression model was run before export._\n\n")
+}
+```
+
+```{r consfunc-section, results='asis', eval=has("cons_func")}
+cat("## 8. Conservation by Functionality\n\n")
+cf <- params$cons_func
+if (!is.null(cf) && !is.null(cf$data) && nrow(cf$data) > 0) {
+  print(knitr::kable(head(cf$data, 50), digits = 3))
+  if (!is.null(cf$chi) && nrow(cf$chi) > 0) {
+    cat("\n**Chi-square tests (motif presence vs functionality):**\n\n")
+    print(knitr::kable(cf$chi, digits = 4))
+  }
+} else {
+  cat("_No conservation/functionality analysis was generated before export._\n\n")
+}
+```
+
+```{r scanner-section, results='asis', eval=has("scanner")}
+cat("## 9. Motif Scanner (Consensus / PWM)\n\n")
+sc <- params$scanner
+if (!is.null(sc)) {
+  cat("_Motif scanner results included — see attached export tables for full detail._\n\n")
+} else {
+  cat("_No motif scanner run was captured before export._\n\n")
+}
+```
+
+---
+
+## Methodological Notes
+
+This report reflects the exact state of the analyses as displayed in the
+IMGT/PROMISE application at the moment of export (no analysis is
+recomputed during report generation). Sections that were not launched by
+the user before export are reported as unavailable rather than
+recalculated automatically.
+
+*Generated by IMGT/PROMISE.*

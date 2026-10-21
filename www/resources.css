@@ -1,0 +1,40 @@
+/* section Resources */
+
+.res-note { background:#EFF6FF; border-left:4px solid #1565C0; padding:10px 14px;
+  border-radius:6px; font-size:12.5px; color:#374151; margin:12px 0; }
+.res-pending { background:#FFFBEB; border-left:4px solid #D97706; padding:10px 14px;
+  border-radius:6px; font-size:13px; color:#92400E; display:inline-block; }
+
+.res-workflow { display:flex; align-items:stretch; gap:6px; flex-wrap:wrap; margin:10px 0; }
+.res-phase { flex:1; min-width:170px; background:linear-gradient(135deg,#F0F6FF,#F0FDF4);
+  border:1px solid #CBD5E1; border-radius:10px; padding:12px 14px; }
+.res-phase span { display:inline-flex; width:24px; height:24px; border-radius:50%;
+  background:#0B2A5B; color:#fff; font-weight:700; font-size:12px;
+  align-items:center; justify-content:center; margin-right:8px; }
+.res-phase p { font-size:12px; color:#4B5563; margin:6px 0 0 0; }
+.res-arrow { align-self:center; color:#94A3B8; }
+
+.res-steps li { margin-bottom:8px; line-height:1.6; font-size:14px; }
+
+.faq-item { border:1px solid #E5E7EB; border-radius:8px; margin-bottom:8px; background:#fff; }
+.faq-item summary { cursor:pointer; padding:10px 14px; font-weight:600; color:#0B2A5B; }
+.faq-item[open] summary { border-bottom:1px solid #E5E7EB; background:#F8FAFF; }
+.faq-body { padding:10px 14px; font-size:13.5px; color:#374151; }
+
+.res-badge { display:inline-block; background:#E5E7EB; color:#374151; border-radius:12px;
+  padding:3px 11px; font-size:11.5px; font-weight:600; margin:2px 4px 2px 0; }
+.res-badge-pkg { background:#DBEAFE; color:#1E40AF; font-family:monospace; }
+
+.res-code { background:#0D2137; color:#E2E8F0; border-radius:8px; padding:14px; font-size:12.5px; }
+.res-cite { background:#F8FAFC; border:1px solid #E2E8F0; border-radius:8px; padding:12px 14px;
+  font-size:13.5px; line-height:1.6; }
+.res-refs li { margin-bottom:8px; line-height:1.55; font-size:13.5px; }
+
+.res-table td.res-k { font-weight:700; color:#0B2A5B; width:38%; }
+
+.res-status { font-size:10.5px; padding:1px 8px; border-radius:10px; margin-left:6px; font-weight:600; }
+.res-status.ok { background:#DCFCE7; color:#166534; }
+.res-status.na { background:#F3F4F6; color:#6B7280; }
+.res-summary { background:#F0FDF4; border-radius:6px; padding:8px 12px; font-size:12.5px; margin-top:8px; }
+
+.res-footer { text-align:center; color:#6B7280; font-size:11.5px; padding:14px 0 4px 0; }
